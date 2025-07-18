@@ -12,6 +12,7 @@ For a detailed explanation of the project's components and workflow, please see 
 - **Local LLM**: Uses a locally running Ollama instance, ensuring data privacy and cost-effectiveness.
 - **Vector Store**: Employs ChromaDB to store and retrieve training data (DDL, documentation, and sample queries).
 - **Web Interface**: A user-friendly web UI built with Flask for easy interaction.
+- **Multiple Training Options**: Train from database schema or DDL files in `input/` folder.
 - **Configuration-driven**: Easy to set up and configure using environment variables.
 
 ## Prerequisites
@@ -83,15 +84,21 @@ FLASK_PORT=8084
 
 ### 5. Train the Model
 
-Before you can ask questions, you need to "train" the Vanna instance on your database schema and any other relevant information. This process involves extracting metadata from your database and storing it in the ChromaDB vector store.
+Before you can ask questions, you need to "train" the Vanna instance on your database schema. Choose one of these training methods:
 
-Run the following command to start the training process:
-
+**Option A: Train from Database Schema (Recommended)**
 ```bash
 python app.py --train
 ```
 
-This will connect to your database, extract the schema, and store it for the LLM to use as context. You can also add custom DDL statements, documentation, and SQL queries to the `app.py` file to improve accuracy.
+**Option B: Train from DDL Files**
+1. Place your `.sql` DDL files in the `input/` folder
+2. Run:
+```bash
+python app.py --train-ddl
+```
+
+Both methods store the schema information in ChromaDB for the LLM to use as context.
 
 ## Usage
 
