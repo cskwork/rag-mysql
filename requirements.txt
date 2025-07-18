@@ -1,5 +1,5 @@
 # Vanna.ai stack
-vanna[chromadb,ollama,mysql]
+vanna[chromadb,ollama,openai,mysql]
 
 # Web app
 Flask
