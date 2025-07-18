@@ -2,16 +2,20 @@
 
 This project demonstrates how to use the `vanna` library to generate SQL queries for a MySQL database using a Retrieval-Augmented Generation (RAG) approach. It leverages a local Large Language Model (LLM) via Ollama and uses ChromaDB as the vector store for the training data.
 
-The application provides a web interface using Flask, allowing users to ask questions in natural language, which are then converted into SQL queries and executed against the database.
+The application provides **dual web interfaces**: a production-ready Flask backend and a modern Streamlit frontend, allowing users to ask questions in natural language, which are then converted into SQL queries and executed against the database.
 
 For a detailed explanation of the project's components and workflow, please see the [**Project Architecture Documentation**](.docs/architecture.md).
 
 ## Features
 
 - **Natural Language to SQL**: Ask questions in plain English and get SQL queries in return.
+- **Dual Frontend Options**: 
+  - **Flask Interface**: Production-ready web UI with VannaFlaskApp
+  - **Streamlit Interface**: Modern, interactive chat-based UI with real-time visualization
 - **Local LLM**: Uses a locally running Ollama instance, ensuring data privacy and cost-effectiveness.
 - **Vector Store**: Employs ChromaDB to store and retrieve training data (DDL, documentation, and sample queries).
-- **Web Interface**: A user-friendly web UI built with Flask for easy interaction.
+- **Interactive Visualizations**: Automatic chart generation with Plotly for query results
+- **Query History**: Track and review previous questions and generated SQL
 - **Multiple Training Options**: Train from database schema or DDL files in `input/` folder.
 - **Configuration-driven**: Easy to set up and configure using environment variables.
 
@@ -102,7 +106,40 @@ Both methods store the schema information in ChromaDB for the LLM to use as cont
 
 ## Usage
 
-After the training is complete, you can start the Flask web application:
+After the training is complete, you have two options for running the application:
+
+### Option A: Streamlit Interface (Recommended for Interactive Use)
+
+Configure the Streamlit secrets file with your database credentials:
+
+```bash
+# Edit .streamlit/secrets.toml with your database settings
+# The file is already created with default values
+```
+
+Start the Streamlit app:
+
+```bash
+./run_streamlit.sh
+```
+
+Or manually:
+
+```bash
+source venv/bin/activate
+streamlit run streamlit_app.py --server.port=8502
+```
+
+The Streamlit app will be running on `http://localhost:8502` by default. It provides:
+- 💬 Interactive chat interface
+- 📊 Automatic data visualization with Plotly
+- 📝 Query history tracking
+- 🗄️ Database schema exploration
+- ⚙️ Real-time configuration display
+
+### Option B: Flask Interface (Production Ready)
+
+Start the Flask web application:
 
 ```bash
 python app.py

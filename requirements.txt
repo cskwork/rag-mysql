@@ -4,6 +4,11 @@ vanna[chromadb,ollama,mysql]
 # Web app
 Flask
 
+# Streamlit frontend
+streamlit
+plotly
+openpyxl
+
 # Environment variables
 python-dotenv
 
