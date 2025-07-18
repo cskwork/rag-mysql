@@ -9,6 +9,7 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY"] = "false"
 
 from vanna.ollama import Ollama
+from vanna.openai import OpenAI_Chat
 from vanna.chromadb import ChromaDB_VectorStore
 from vanna.flask import VannaFlaskApp
 
@@ -23,8 +24,15 @@ DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = os.getenv("DB_NAME", "your-db")
 
+# LLM Provider configuration
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
+
 # Ollama model configuration
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3n:latest")
+
+# OpenAI configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
 
 # Vanna.ai API key and model (optional)
 VANNA_API_KEY = os.getenv("VANNA_API_KEY")
@@ -37,7 +45,7 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", 8084))
 ALLOW_LLM_TO_SEE_DATA = os.getenv("ALLOW_LLM_TO_SEE_DATA", "True").lower() == "true"
 
 # --- Vanna Setup ---
-class MyVanna(ChromaDB_VectorStore, Ollama):
+class MyVannaOllama(ChromaDB_VectorStore, Ollama):
     """
     Custom Vanna class that uses ChromaDB for the vector store
     and a local Ollama instance for the LLM.
@@ -57,22 +65,75 @@ class MyVanna(ChromaDB_VectorStore, Ollama):
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         Ollama.__init__(self, config={'model': OLLAMA_MODEL})
 
-vn = MyVanna()
+class MyVannaOpenAI(ChromaDB_VectorStore, OpenAI_Chat):
+    """
+    Custom Vanna class that uses ChromaDB for the vector store
+    and OpenAI's GPT models for the LLM.
+    """
+    def __init__(self, config=None):
+        # Default ChromaDB path
+        chroma_db_path = "chromadb"
+        # Ensure the directory exists
+        if not os.path.exists(chroma_db_path):
+            os.makedirs(chroma_db_path)
+        
+        # ChromaDB 설정에 telemetry 비활성화 추가
+        chroma_config = {
+            'path': chroma_db_path,
+            'anonymized_telemetry': False  # ChromaDB telemetry 비활성화
+        }
+        ChromaDB_VectorStore.__init__(self, config=chroma_config)
+        OpenAI_Chat.__init__(self, config={'api_key': OPENAI_API_KEY, 'model': OPENAI_MODEL})
+
+def create_vanna_instance():
+    """
+    팩토리 함수: 설정된 LLM 프로바이더에 따라 적절한 Vanna 인스턴스를 생성
+    """
+    if LLM_PROVIDER == "openai":
+        if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-your-api-key-here":
+            raise ValueError("OpenAI API key가 설정되지 않았습니다. .env 파일에서 OPENAI_API_KEY를 설정해주세요.")
+        print(f"🤖 OpenAI provider 사용 중 (model: {OPENAI_MODEL})")
+        return MyVannaOpenAI()
+    elif LLM_PROVIDER == "ollama":
+        print(f"🦙 Ollama provider 사용 중 (model: {OLLAMA_MODEL})")
+        return MyVannaOllama()
+    else:
+        raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama' 또는 'openai'를 사용하세요.")
+
+vn = create_vanna_instance()
 
 # --- Database Connection ---
-try:
-    print(f"🔌 Attempting to connect to MySQL: {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
-    vn.connect_to_mysql(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        dbname=DB_NAME  # 올바른 매개변수명: dbname
-    )
-    print("✅ Successfully connected to MySQL database.")
-except Exception as e:
-    print(f"🔥 Failed to connect to MySQL database: {e}")
-    print("Please check your database credentials in the .env file.")
+def connect_to_database():
+    """데이터베이스 연결 함수 (재연결 지원)"""
+    try:
+        print(f"🔌 Attempting to connect to MySQL: {DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}")
+        vn.connect_to_mysql(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            dbname=DB_NAME  # 올바른 매개변수명: dbname
+        )
+        print("✅ Successfully connected to MySQL database.")
+        return True
+    except Exception as e:
+        print(f"🔥 Failed to connect to MySQL database: {e}")
+        print("Please check your database credentials in the .env file.")
+        return False
+
+def ensure_database_connection():
+    """데이터베이스 연결 상태 확인 및 재연결"""
+    try:
+        # 간단한 쿼리로 연결 상태 테스트
+        vn.run_sql("SELECT 1")
+        return True
+    except Exception:
+        print("🔄 Database connection lost, attempting to reconnect...")
+        return connect_to_database()
+
+# 초기 데이터베이스 연결
+if not connect_to_database():
+    print("⚠️ Starting without database connection. Please fix database settings and restart.")
     # exit(1) # Uncomment this line to exit if the database connection fails
 
 # --- DDL File Processing ---
@@ -322,6 +383,12 @@ def train_vanna(include_ddl_files=True, include_per_table=False):
     # 1. Information Schema 훈련
     try:
         print("📊 Step 1: Training with Information Schema...")
+        
+        # 연결 상태 확인 및 재연결
+        if not ensure_database_connection():
+            print("⚠️ Cannot connect to database for Information Schema training")
+            return training_steps
+            
         df_information_schema = vn.run_sql("SELECT * FROM INFORMATION_SCHEMA.COLUMNS")
         print(f"Extracted {len(df_information_schema)} columns from INFORMATION_SCHEMA.")
         
@@ -336,6 +403,9 @@ def train_vanna(include_ddl_files=True, include_per_table=False):
 
     except Exception as e:
         print(f"🔥 Error during information schema training: {e}")
+        print("🔄 Attempting to reconnect...")
+        if ensure_database_connection():
+            print("✅ Reconnected successfully, please retry training")
 
     # 2. DDL 파일들로 훈련 (선택적)
     if include_ddl_files:
@@ -363,6 +433,12 @@ def train_vanna(include_ddl_files=True, include_per_table=False):
     if include_per_table:
         try:
             print("🗂️ Step 3: Training with individual table DDLs...")
+            
+            # 연결 상태 확인 및 재연결
+            if not ensure_database_connection():
+                print("⚠️ Cannot connect to database for per-table training")
+                return training_steps
+                
             tables_df = vn.run_sql(f"SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{DB_NAME}'")
             
             if not tables_df.empty:
@@ -370,6 +446,11 @@ def train_vanna(include_ddl_files=True, include_per_table=False):
                 for _, row in tables_df.iterrows():
                     table_name = row['TABLE_NAME']
                     try:
+                        # 각 테이블마다 연결 상태 확인
+                        if not ensure_database_connection():
+                            print(f"⚠️ Connection lost while processing table {table_name}")
+                            break
+                            
                         ddl_query = f"SHOW CREATE TABLE {table_name}"
                         ddl_result = vn.run_sql(ddl_query)
                         
@@ -388,6 +469,9 @@ def train_vanna(include_ddl_files=True, include_per_table=False):
                 
         except Exception as e:
             print(f"🔥 Error during per-table training: {e}")
+            print("🔄 Attempting to reconnect...")
+            if ensure_database_connection():
+                print("✅ Reconnected successfully, please retry training")
 
     # 4. 사용자 정의 문서화 (향후 확장 가능)
     # 비즈니스 용어, 정의, 일반적인 쿼리에 대한 문서 추가
@@ -455,5 +539,12 @@ if __name__ == "__main__":
         
         print(f"🚀 Starting Flask app on http://localhost:{FLASK_PORT}")
         print(f"🔍 LLM data access: {'Enabled' if ALLOW_LLM_TO_SEE_DATA else 'Disabled'}")
+        
+        # Flask 앱 시작 전 연결 재확인
+        if ensure_database_connection():
+            print("✅ Database connection verified before starting Flask app")
+        else:
+            print("⚠️ Starting Flask app without database connection")
+            
         app = VannaFlaskApp(vn, allow_llm_to_see_data=ALLOW_LLM_TO_SEE_DATA)
         app.run(host="0.0.0.0", port=FLASK_PORT) 
