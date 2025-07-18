@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 os.environ["VANNA_DISABLE_TELEMETRY"] = "1"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY"] = "false"
+os.environ["CHROMA_DISABLE_TELEMETRY"] = "1"
+os.environ["DO_NOT_TRACK"] = "1"
+# HuggingFace tokenizers 병렬 처리 경고 해결
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from vanna.ollama import Ollama
 from vanna.openai import OpenAI_Chat
@@ -64,6 +68,56 @@ class MyVannaOllama(ChromaDB_VectorStore, Ollama):
         }
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         Ollama.__init__(self, config={'model': OLLAMA_MODEL})
+    
+    def generate_sql(self, question: str, **kwargs) -> str:
+        """
+        한국어 맥락을 포함한 커스텀 SQL 생성 메서드
+        """
+        # 관련 DDL과 문서 정보 검색
+        try:
+            related_ddl = self.get_related_ddl(question, **kwargs)
+            related_documentation = self.get_related_documentation(question, **kwargs)
+            related_sql = self.get_related_sql(question, **kwargs)
+        except Exception as e:
+            print(f"Warning: Could not retrieve related information: {e}")
+            related_ddl = []
+            related_documentation = []
+            related_sql = []
+        
+        # 커스텀 시스템 메시지
+        custom_system_message = """당신은 MySQL 데이터베이스를 위한 SQL 쿼리 생성 전문가입니다.
+다음 규칙을 반드시 따르세요:
+출력 규칙:
+- 순수한 SQL 쿼리만 반환 (주석이나 설명 제외)
+- MySQL 8.0 문법 사용"""
+        
+        # 프롬프트 구성
+        user_prompt = f"질문: {question}\n\n"
+        
+        if related_ddl:
+            user_prompt += "관련 테이블 스키마:\n"
+            for ddl in related_ddl:
+                user_prompt += f"{ddl}\n\n"
+        
+        if related_sql:
+            user_prompt += "참고할 유사한 SQL 예시:\n"
+            for sql in related_sql:
+                user_prompt += f"{sql}\n\n"
+        
+        if related_documentation:
+            user_prompt += "관련 문서:\n"
+            for doc in related_documentation:
+                user_prompt += f"{doc}\n\n"
+        
+        user_prompt += "위 정보를 참고하여 정확하고 효율적인 SQL 쿼리를 생성해주세요."
+        
+        # 프롬프트로 SQL 생성
+        prompt = [
+            self.system_message(custom_system_message),
+            self.user_message(user_prompt)
+        ]
+        
+        return self.submit_prompt(prompt=prompt)
 
 class MyVannaOpenAI(ChromaDB_VectorStore, OpenAI_Chat):
     """
@@ -84,6 +138,56 @@ class MyVannaOpenAI(ChromaDB_VectorStore, OpenAI_Chat):
         }
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         OpenAI_Chat.__init__(self, config={'api_key': OPENAI_API_KEY, 'model': OPENAI_MODEL})
+    
+    def generate_sql(self, question: str, **kwargs) -> str:
+        """
+        한국어 맥락을 포함한 커스텀 SQL 생성 메서드
+        """
+        # 관련 DDL과 문서 정보 검색
+        try:
+            related_ddl = self.get_related_ddl(question, **kwargs)
+            related_documentation = self.get_related_documentation(question, **kwargs)
+            related_sql = self.get_related_sql(question, **kwargs)
+        except Exception as e:
+            print(f"Warning: Could not retrieve related information: {e}")
+            related_ddl = []
+            related_documentation = []
+            related_sql = []
+        
+        # 커스텀 시스템 메시지
+        custom_system_message = """당신은 MySQL 데이터베이스를 위한 SQL 쿼리 생성 전문가입니다.
+다음 규칙을 반드시 따르세요:
+출력 규칙:
+- 순수한 SQL 쿼리만 반환 (주석이나 설명 제외)
+- MySQL 8.0 문법 사용"""
+        
+        # 프롬프트 구성
+        user_prompt = f"질문: {question}\n\n"
+        
+        if related_ddl:
+            user_prompt += "관련 테이블 스키마:\n"
+            for ddl in related_ddl:
+                user_prompt += f"{ddl}\n\n"
+        
+        if related_sql:
+            user_prompt += "참고할 유사한 SQL 예시:\n"
+            for sql in related_sql:
+                user_prompt += f"{sql}\n\n"
+        
+        if related_documentation:
+            user_prompt += "관련 문서:\n"
+            for doc in related_documentation:
+                user_prompt += f"{doc}\n\n"
+        
+        user_prompt += "위 정보를 참고하여 정확하고 효율적인 SQL 쿼리를 생성해주세요."
+        
+        # 프롬프트로 SQL 생성
+        prompt = [
+            self.system_message(custom_system_message),
+            self.user_message(user_prompt)
+        ]
+        
+        return self.submit_prompt(prompt=prompt)
 
 def create_vanna_instance():
     """
