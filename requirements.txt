@@ -1,0 +1,11 @@
+# Vanna.ai stack
+vanna[chromadb,ollama,mysql]
+
+# Web app
+Flask
+
+# Environment variables
+python-dotenv
+
+# Production Web Server
+gunicorn 
