@@ -12,6 +12,7 @@ from vanna.ollama import Ollama
 from vanna.openai import OpenAI_Chat
 from vanna.chromadb import ChromaDB_VectorStore
 from vanna.flask import VannaFlaskApp
+from openai import OpenAI
 
 # --- Configuration ---
 # Load environment variables from .env file
@@ -33,6 +34,12 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3n:latest")
 # OpenAI configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
+
+# OpenRouter configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
+OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "http://localhost:8084")
+OPENROUTER_SITE_NAME = os.getenv("OPENROUTER_SITE_NAME", "RAG-MySQL")
 
 # Vanna.ai API key and model (optional)
 VANNA_API_KEY = os.getenv("VANNA_API_KEY")
@@ -85,6 +92,41 @@ class MyVannaOpenAI(ChromaDB_VectorStore, OpenAI_Chat):
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         OpenAI_Chat.__init__(self, config={'api_key': OPENAI_API_KEY, 'model': OPENAI_MODEL})
 
+class MyVannaOpenRouter(ChromaDB_VectorStore, OpenAI_Chat):
+    """
+    Custom Vanna class that uses ChromaDB for the vector store
+    and OpenRouter's unified API for accessing multiple LLM providers.
+    """
+    def __init__(self, config=None):
+        # Default ChromaDB path
+        chroma_db_path = "chromadb"
+        # Ensure the directory exists
+        if not os.path.exists(chroma_db_path):
+            os.makedirs(chroma_db_path)
+        
+        # ChromaDB 설정에 telemetry 비활성화 추가
+        chroma_config = {
+            'path': chroma_db_path,
+            'anonymized_telemetry': False  # ChromaDB telemetry 비활성화
+        }
+        ChromaDB_VectorStore.__init__(self, config=chroma_config)
+        
+        # Create custom OpenAI client for OpenRouter
+        openrouter_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+            default_headers={
+                "HTTP-Referer": OPENROUTER_SITE_URL,
+                "X-Title": OPENROUTER_SITE_NAME,
+            }
+        )
+        
+        OpenAI_Chat.__init__(
+            self, 
+            client=openrouter_client,
+            config={'model': OPENROUTER_MODEL}
+        )
+
 def create_vanna_instance():
     """
     팩토리 함수: 설정된 LLM 프로바이더에 따라 적절한 Vanna 인스턴스를 생성
@@ -94,11 +136,16 @@ def create_vanna_instance():
             raise ValueError("OpenAI API key가 설정되지 않았습니다. .env 파일에서 OPENAI_API_KEY를 설정해주세요.")
         print(f"🤖 OpenAI provider 사용 중 (model: {OPENAI_MODEL})")
         return MyVannaOpenAI()
+    elif LLM_PROVIDER == "openrouter":
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "sk-your-api-key-here":
+            raise ValueError("OpenRouter API key가 설정되지 않았습니다. .env 파일에서 OPENROUTER_API_KEY를 설정해주세요.")
+        print(f"🌐 OpenRouter provider 사용 중 (model: {OPENROUTER_MODEL})")
+        return MyVannaOpenRouter()
     elif LLM_PROVIDER == "ollama":
         print(f"🦙 Ollama provider 사용 중 (model: {OLLAMA_MODEL})")
         return MyVannaOllama()
     else:
-        raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama' 또는 'openai'를 사용하세요.")
+        raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama', 'openai', 또는 'openrouter'를 사용하세요.")
 
 vn = create_vanna_instance()
 
@@ -135,6 +182,10 @@ def ensure_database_connection():
 if not connect_to_database():
     print("⚠️ Starting without database connection. Please fix database settings and restart.")
     # exit(1) # Uncomment this line to exit if the database connection fails
+
+# Create Flask app for Gunicorn (module-level)
+vanna_flask_app = VannaFlaskApp(vn, allow_llm_to_see_data=ALLOW_LLM_TO_SEE_DATA)
+app = vanna_flask_app.flask_app
 
 # --- DDL File Processing ---
 def chunk_ddl_content(content, max_chunk_size=4000):
@@ -536,6 +587,7 @@ if __name__ == "__main__":
             print("   --train-per-table: Individual table DDLs")
             print("   --train-hybrid   : Hybrid approach (recommended)")
             print("   --clear          : Clear all training data")
+            print("💡 Available LLM providers: ollama, openai, openrouter")
         
         print(f"🚀 Starting Flask app on http://localhost:{FLASK_PORT}")
         print(f"🔍 LLM data access: {'Enabled' if ALLOW_LLM_TO_SEE_DATA else 'Disabled'}")
@@ -546,5 +598,4 @@ if __name__ == "__main__":
         else:
             print("⚠️ Starting Flask app without database connection")
             
-        app = VannaFlaskApp(vn, allow_llm_to_see_data=ALLOW_LLM_TO_SEE_DATA)
-        app.run(host="0.0.0.0", port=FLASK_PORT) 
+        vanna_flask_app.run(host="0.0.0.0", port=FLASK_PORT) 
