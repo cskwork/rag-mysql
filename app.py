@@ -13,6 +13,7 @@ from vanna.openai import OpenAI_Chat
 from vanna.chromadb import ChromaDB_VectorStore
 from vanna.flask import VannaFlaskApp
 from openai import OpenAI
+from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
 # --- Configuration ---
 # Load environment variables from .env file
@@ -64,10 +65,17 @@ class MyVannaOllama(ChromaDB_VectorStore, Ollama):
         if not os.path.exists(chroma_db_path):
             os.makedirs(chroma_db_path)
         
-        # ChromaDB 설정에 telemetry 비활성화 추가
+        # OpenAI embedding function 설정
+        openai_embedding_function = OpenAIEmbeddingFunction(
+            api_key=OPENAI_API_KEY,
+            model_name="text-embedding-3-small"
+        )
+        
+        # ChromaDB 설정에 telemetry 비활성화 및 OpenAI embedding 추가
         chroma_config = {
             'path': chroma_db_path,
-            'anonymized_telemetry': False  # ChromaDB telemetry 비활성화
+            'anonymized_telemetry': False,  # ChromaDB telemetry 비활성화
+            'embedding_function': openai_embedding_function
         }
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         Ollama.__init__(self, config={'model': OLLAMA_MODEL})
@@ -84,10 +92,17 @@ class MyVannaOpenAI(ChromaDB_VectorStore, OpenAI_Chat):
         if not os.path.exists(chroma_db_path):
             os.makedirs(chroma_db_path)
         
-        # ChromaDB 설정에 telemetry 비활성화 추가
+        # OpenAI embedding function 설정
+        openai_embedding_function = OpenAIEmbeddingFunction(
+            api_key=OPENAI_API_KEY,
+            model_name="text-embedding-3-small"
+        )
+        
+        # ChromaDB 설정에 telemetry 비활성화 및 OpenAI embedding 추가
         chroma_config = {
             'path': chroma_db_path,
-            'anonymized_telemetry': False  # ChromaDB telemetry 비활성화
+            'anonymized_telemetry': False,  # ChromaDB telemetry 비활성화
+            'embedding_function': openai_embedding_function
         }
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         OpenAI_Chat.__init__(self, config={'api_key': OPENAI_API_KEY, 'model': OPENAI_MODEL})
@@ -104,10 +119,17 @@ class MyVannaOpenRouter(ChromaDB_VectorStore, OpenAI_Chat):
         if not os.path.exists(chroma_db_path):
             os.makedirs(chroma_db_path)
         
-        # ChromaDB 설정에 telemetry 비활성화 추가
+        # OpenAI embedding function 설정 (OpenRouter가 아닌 OpenAI API 사용)
+        openai_embedding_function = OpenAIEmbeddingFunction(
+            api_key=OPENAI_API_KEY,
+            model_name="text-embedding-3-small"
+        )
+        
+        # ChromaDB 설정에 telemetry 비활성화 및 OpenAI embedding 추가
         chroma_config = {
             'path': chroma_db_path,
-            'anonymized_telemetry': False  # ChromaDB telemetry 비활성화
+            'anonymized_telemetry': False,  # ChromaDB telemetry 비활성화
+            'embedding_function': openai_embedding_function
         }
         ChromaDB_VectorStore.__init__(self, config=chroma_config)
         
@@ -131,18 +153,23 @@ def create_vanna_instance():
     """
     팩토리 함수: 설정된 LLM 프로바이더에 따라 적절한 Vanna 인스턴스를 생성
     """
+    # OpenAI API key validation for embedding function (모든 프로바이더에서 필요)
+    if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-your-api-key-here":
+        raise ValueError("OpenAI API key가 설정되지 않았습니다. embedding function을 위해 .env 파일에서 OPENAI_API_KEY를 설정해주세요.")
+
     if LLM_PROVIDER == "openai":
-        if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-your-api-key-here":
-            raise ValueError("OpenAI API key가 설정되지 않았습니다. .env 파일에서 OPENAI_API_KEY를 설정해주세요.")
         print(f"🤖 OpenAI provider 사용 중 (model: {OPENAI_MODEL})")
+        print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
         return MyVannaOpenAI()
     elif LLM_PROVIDER == "openrouter":
         if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "sk-your-api-key-here":
             raise ValueError("OpenRouter API key가 설정되지 않았습니다. .env 파일에서 OPENROUTER_API_KEY를 설정해주세요.")
         print(f"🌐 OpenRouter provider 사용 중 (model: {OPENROUTER_MODEL})")
+        print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
         return MyVannaOpenRouter()
     elif LLM_PROVIDER == "ollama":
         print(f"🦙 Ollama provider 사용 중 (model: {OLLAMA_MODEL})")
+        print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
         return MyVannaOllama()
     else:
         raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama', 'openai', 또는 'openrouter'를 사용하세요.")
