@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import os
 import argparse
+from typing import Awaitable, Callable, Dict, List, Optional
 from dotenv import load_dotenv
 
 # telemetry 비활성화로 capture() 에러 해결
@@ -14,6 +16,7 @@ from vanna.chromadb import ChromaDB_VectorStore
 from vanna.flask import VannaFlaskApp
 from openai import OpenAI
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
 # --- Configuration ---
 # Load environment variables from .env file
@@ -42,6 +45,18 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "http://localhost:8084")
 OPENROUTER_SITE_NAME = os.getenv("OPENROUTER_SITE_NAME", "RAG-MySQL")
 
+# Claude Agent SDK configuration
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-latest")
+CLAUDE_SYSTEM_PROMPT = os.getenv(
+    "CLAUDE_SYSTEM_PROMPT",
+    "You are a helpful SQL assistant.",
+)
+try:
+    CLAUDE_MAX_TURNS = int(os.getenv("CLAUDE_MAX_TURNS", "6"))
+except ValueError:
+    CLAUDE_MAX_TURNS = 6
+
 # Vanna.ai API key and model (optional)
 VANNA_API_KEY = os.getenv("VANNA_API_KEY")
 VANNA_MODEL = os.getenv("VANNA_MODEL", "rag-mysql-ollama")
@@ -53,6 +68,176 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", 8084))
 ALLOW_LLM_TO_SEE_DATA = os.getenv("ALLOW_LLM_TO_SEE_DATA", "True").lower() == "true"
 
 # --- Vanna Setup ---
+class ClaudeAgentChat(VannaBase):
+    """Claude Agent SDK 기반 Vanna 어댑터."""
+
+    def __init__(self, config: Optional[Dict[str, object]] = None):
+        if config is None:
+            config = {}
+        VannaBase.__init__(self, config=config)
+        self.model = config.get("model", CLAUDE_MODEL)
+        max_turns_config = config.get("max_turns", CLAUDE_MAX_TURNS)
+        try:
+            self.max_turns = int(max_turns_config) if max_turns_config is not None else 0
+        except ValueError:
+            self.max_turns = CLAUDE_MAX_TURNS
+        self._base_system_prompt = config.get("system_prompt", CLAUDE_SYSTEM_PROMPT)
+        self._system_prompt_cache: Optional[str] = None
+        self._conversation_history: List[Dict[str, str]] = []
+
+    def system_message(self, message: str) -> Dict[str, str]:
+        return {"role": "system", "content": message}
+
+    def user_message(self, message: str) -> Dict[str, str]:
+        return {"role": "user", "content": message}
+
+    def assistant_message(self, message: str) -> Dict[str, str]:
+        return {"role": "assistant", "content": message}
+
+    def submit_prompt(self, prompt, **kwargs) -> str:
+        if prompt is None or len(prompt) == 0:
+            raise ValueError("Claude provider requires a non-empty prompt.")
+
+        def _coro_factory() -> asyncio.Future:
+            return self._submit_async(prompt)
+
+        return self._run_coroutine(_coro_factory)
+
+    def _run_coroutine(self, coro_factory: Callable[[], Awaitable[str]]) -> str:
+        try:
+            return asyncio.run(coro_factory())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(coro_factory())
+            finally:
+                asyncio.set_event_loop(None)
+                loop.close()
+
+    async def _submit_async(self, prompt) -> str:
+        system_prompt, fewshot_messages, final_user = self._split_prompt(prompt)
+        if system_prompt and not self._system_prompt_cache:
+            self._system_prompt_cache = system_prompt
+
+        active_system_prompt = (
+            self._system_prompt_cache or system_prompt or self._base_system_prompt
+        )
+
+        message_sequence: List[Dict[str, str]] = []
+        if self._conversation_history:
+            message_sequence.extend(self._conversation_history)
+        if fewshot_messages:
+            message_sequence.extend(fewshot_messages)
+        message_sequence.append(final_user)
+
+        conversation_payload = self._render_messages(message_sequence)
+        option_kwargs: Dict[str, object] = {"system_prompt": active_system_prompt}
+        if self.model:
+            option_kwargs["model"] = self.model
+        if self.max_turns:
+            option_kwargs["max_turns"] = self.max_turns
+
+        try:
+            options = ClaudeAgentOptions(**option_kwargs)
+        except TypeError:
+            if "model" in option_kwargs:
+                option_kwargs.pop("model")
+                options = ClaudeAgentOptions(**option_kwargs)
+            else:
+                raise
+
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(conversation_payload)
+            response_text = await self._collect_response(client)
+
+        self._append_history(final_user.get("content", ""), response_text)
+        return response_text
+
+    def _split_prompt(
+        self, prompt: List[Dict[str, str]]
+    ) -> tuple[Optional[str], List[Dict[str, str]], Dict[str, str]]:
+        system_prompt: Optional[str] = None
+        non_system_messages: List[Dict[str, str]] = []
+
+        for message in prompt:
+            role = message.get("role")
+            content = message.get("content", "")
+            if role == "system":
+                if system_prompt is None:
+                    system_prompt = content
+                continue
+            non_system_messages.append({"role": role, "content": content})
+
+        if not non_system_messages:
+            raise ValueError("Claude provider prompt missing user content.")
+
+        final_user_index: Optional[int] = None
+        for idx in range(len(non_system_messages) - 1, -1, -1):
+            if non_system_messages[idx]["role"] == "user":
+                final_user_index = idx
+                break
+
+        if final_user_index is None:
+            raise ValueError("Claude provider prompt must include a user turn.")
+
+        fewshot_messages = non_system_messages[:final_user_index]
+        final_user = non_system_messages[final_user_index]
+        trailing = non_system_messages[final_user_index + 1 :]
+        if trailing:
+            fewshot_messages.extend(trailing)
+
+        return system_prompt, fewshot_messages, final_user
+
+    def _render_messages(self, messages: List[Dict[str, str]]) -> str:
+        role_map = {"user": "User", "assistant": "Assistant"}
+        segments: List[str] = []
+
+        for item in messages:
+            role = item.get("role")
+            label = role_map.get(role, (role or "User").title())
+            content = item.get("content", "")
+            segments.append(f"{label}: {content}")
+
+        return "\n\n".join(segments)
+
+    async def _collect_response(self, client: ClaudeSDKClient) -> str:
+        parts: List[str] = []
+
+        async for message in client.receive_response():
+            parts.extend(self._extract_text_chunks(message))
+
+        return "\n".join(chunk for chunk in parts if chunk).strip()
+
+    def _extract_text_chunks(self, message) -> List[str]:
+        chunks: List[str] = []
+        direct_text = getattr(message, "text", None)
+        if isinstance(direct_text, str) and direct_text.strip():
+            chunks.append(direct_text)
+
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                block_text = getattr(block, "text", None)
+                if isinstance(block_text, str) and block_text.strip():
+                    chunks.append(block_text)
+
+        return chunks
+
+    def _append_history(self, user_text: str, assistant_text: str) -> None:
+        if user_text:
+            self._conversation_history.append({"role": "user", "content": user_text})
+        if assistant_text:
+            self._conversation_history.append(
+                {"role": "assistant", "content": assistant_text}
+            )
+
+        if self.max_turns and self.max_turns > 0:
+            max_messages = self.max_turns * 2
+            if len(self._conversation_history) > max_messages:
+                self._conversation_history = self._conversation_history[-max_messages:]
+
+
 class MyVannaOllama(ChromaDB_VectorStore, Ollama):
     """
     Custom Vanna class that uses ChromaDB for the vector store
@@ -142,12 +327,39 @@ class MyVannaOpenRouter(ChromaDB_VectorStore, OpenAI_Chat):
                 "X-Title": OPENROUTER_SITE_NAME,
             }
         )
-        
+
         OpenAI_Chat.__init__(
             self, 
             client=openrouter_client,
             config={'model': OPENROUTER_MODEL}
         )
+
+class MyVannaClaude(ChromaDB_VectorStore, ClaudeAgentChat):
+    """Claude Agent SDK를 사용하는 Vanna 구현."""
+
+    def __init__(self, config=None):
+        chroma_db_path = "chromadb"
+        if not os.path.exists(chroma_db_path):
+            os.makedirs(chroma_db_path)
+
+        openai_embedding_function = OpenAIEmbeddingFunction(
+            api_key=OPENAI_API_KEY,
+            model_name="text-embedding-3-small"
+        )
+
+        chroma_config = {
+            'path': chroma_db_path,
+            'anonymized_telemetry': False,
+            'embedding_function': openai_embedding_function
+        }
+        ChromaDB_VectorStore.__init__(self, config=chroma_config)
+
+        claude_config = {
+            'model': CLAUDE_MODEL,
+            'system_prompt': CLAUDE_SYSTEM_PROMPT,
+            'max_turns': CLAUDE_MAX_TURNS
+        }
+        ClaudeAgentChat.__init__(self, config=claude_config)
 
 def create_vanna_instance():
     """
@@ -167,12 +379,18 @@ def create_vanna_instance():
         print(f"🌐 OpenRouter provider 사용 중 (model: {OPENROUTER_MODEL})")
         print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
         return MyVannaOpenRouter()
+    elif LLM_PROVIDER == "claude":
+        if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "sk-ant-your-api-key":
+            raise ValueError("Anthropic API key가 설정되지 않았습니다. .env 파일에서 ANTHROPIC_API_KEY를 설정해주세요.")
+        print(f"🤝 Claude provider 사용 중 (model: {CLAUDE_MODEL})")
+        print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
+        return MyVannaClaude()
     elif LLM_PROVIDER == "ollama":
         print(f"🦙 Ollama provider 사용 중 (model: {OLLAMA_MODEL})")
         print("🔗 OpenAI embeddings 사용 중 (text-embedding-3-small)")
         return MyVannaOllama()
     else:
-        raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama', 'openai', 또는 'openrouter'를 사용하세요.")
+        raise ValueError(f"지원하지 않는 LLM provider: {LLM_PROVIDER}. 'ollama', 'openai', 'openrouter', 또는 'claude'를 사용하세요.")
 
 vn = create_vanna_instance()
 
@@ -614,7 +832,7 @@ if __name__ == "__main__":
             print("   --train-per-table: Individual table DDLs")
             print("   --train-hybrid   : Hybrid approach (recommended)")
             print("   --clear          : Clear all training data")
-            print("💡 Available LLM providers: ollama, openai, openrouter")
+            print("💡 Available LLM providers: ollama, openai, openrouter, claude")
         
         print(f"🚀 Starting Flask app on http://localhost:{FLASK_PORT}")
         print(f"🔍 LLM data access: {'Enabled' if ALLOW_LLM_TO_SEE_DATA else 'Disabled'}")

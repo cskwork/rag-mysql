@@ -1,6 +1,9 @@
 # Vanna.ai stack
 vanna[chromadb,ollama,openai,mysql]
 
+# Claude Agent SDK integration
+claude-agent-sdk
+
 # Web app
 Flask
 

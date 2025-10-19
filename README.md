@@ -14,6 +14,7 @@ For a detailed explanation of the project's components and workflow, please see 
 - **Web Interface**: A user-friendly web UI built with Flask for easy interaction.
 - **Multiple Training Options**: Train from database schema or DDL files in `input/` folder.
 - **Configuration-driven**: Easy to set up and configure using environment variables.
+- **Claude Agent SDK Support**: Optionally route SQL generation through Anthropic Claude with multi-turn history via the Claude Agent SDK.
 
 ## Prerequisites
 
@@ -81,6 +82,8 @@ OLLAMA_MODEL="gemma3n:latest"
 # --- Application Configuration ---
 FLASK_PORT=8084
 ```
+
+To enable Anthropic Claude via the Claude Agent SDK, set `LLM_PROVIDER=claude` and follow the configuration guide in [`docs/CLAUDE_SETUP.md`](docs/CLAUDE_SETUP.md).
 
 ### 5. Train the Model
 
